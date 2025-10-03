@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>func/imports/recent-imports.js - Documentation</title>
+    <title>func/externalServiceOauth.js - Documentation</title>
 
     <script src="scripts/prettify/prettify.js"></script>
     <script src="scripts/prettify/lang-css.js"></script>
@@ -29,7 +29,7 @@
 
 <div id="main">
     
-    <h1 class="page-title">func/imports/recent-imports.js</h1>
+    <h1 class="page-title">func/externalServiceOauth.js</h1>
     
 
     
@@ -44,21 +44,12 @@
 Object.defineProperty(exports, "__esModule", {
   value: true
 });
-exports.getRecentImports = getRecentImports;
-exports.getTotalImports = getTotalImports;
-var _get2 = _interopRequireDefault(require("lodash/get"));
-var _map2 = _interopRequireDefault(require("lodash/map"));
-var _flatten2 = _interopRequireDefault(require("lodash/flatten"));
-var _snakeCase2 = _interopRequireDefault(require("lodash/snakeCase"));
-var _assign2 = _interopRequireDefault(require("lodash/assign"));
-var _entity = require("../../types/entity");
-var _alias = require("../alias");
-var _misc = require("./misc");
-var _moment = _interopRequireDefault(require("moment"));
-var _util = require("../../util");
-function _interopRequireDefault(obj) { return obj &amp;&amp; obj.__esModule ? obj : { default: obj }; }
+exports.deleteOauthToken = deleteOauthToken;
+exports.getOauthToken = getOauthToken;
+exports.saveOauthToken = saveOauthToken;
+exports.updateOauthToken = updateOauthToken;
 /*
- * Copyright (C) 2018 Shivam Tripathi
+ * Copyright (C) 2022  Ansh Goyal
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -75,101 +66,116 @@ function _interopRequireDefault(obj) { return obj &amp;&amp; obj.__esModule ? ob
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-/** getRecentImportIdsByType -
- * @param  {Transaction} transacting - Transaction object
- * @param  {number} limit - To limit the number of importIds fetched
- * @param  {number} offset - We offset the result by this value
- * @returns {Promise&lt;Object&lt;Array>>} - Returns an object containing arrays of
- * 		importIds of various importTypes
+/**
+ * Fetches the Oauth token with related data
+ * @param {number} editorId - Editor's id.
+ * @param {string} service - Name of the service.
+ * @param {object} orm - the BookBrainz ORM, initialized during app setup
+ * @returns {Promise} A Promise that resolves to the oauth token in JSON format
  */
-async function getRecentImportUtilData(transacting, limit, offset) {
-  // Extract recent imports, types and import timeStamp
-  const recentImportUtilsData = await transacting.select('meta.imported_at', 'meta.external_source_id', 'bookbrainz.entity.bbid', 'bookbrainz.entity.type').from('bookbrainz.entity').where('is_import', true).join(transacting.select('pending_entity_bbid', 'imported_at', 'external_source_id').from('bookbrainz.import_metadata').orderBy('imported_at').whereNotNull('pending_entity_bbid').whereNull('accepted_entity_bbid').limit(limit).offset(offset).as('meta'), 'meta.pending_entity_bbid', 'bookbrainz.entity.bbid');
-
-  /* Construct importHolder object (holds importIds classified by their types)
-  	object of form {type: []} */
-  const importHolder = _entity.ENTITY_TYPES.reduce((holder, type) => (0, _assign2.default)(holder, {
-    [type]: []
-  }), {});
-
-  /* Returns the holder object which has two fields:
-  	=> importHolder: Object{type: Array[importIds]}
-  		Where type is entityType. This essentially classifies all the
-  		imports into the their respective types
-  	=> timestampMap: Object{importId: imported_at}
-  		This holds a mapping of all imports and their imported_at timestamps
-  	=> externalSourceIdMap: Object{importId: external_source_id}
-  		This holds a mapping of all imports and their external_source_ids
-  	*/
-  return recentImportUtilsData.reduce((holder, data) => {
-    holder.importHolder[data.type].push(data.bbid);
-    holder.externalSourceIdMap[data.bbid] = data.external_source_id;
-    holder.timeStampMap[data.bbid] = data.imported_at;
-    return holder;
-  }, {
-    externalSourceIdMap: {},
-    importHolder,
-    timeStampMap: {}
-  });
+async function getOauthToken(editorId, service, orm) {
+  const rawSql = `SELECT 
+			  editor_id,
+			  service,
+			  access_token,
+			  refresh_token,
+			  token_expires::text,
+              scopes
+		 FROM bookbrainz.external_service_oauth 
+		WHERE editor_id = ${editorId} 
+		  AND service = '${service}'`;
+  const result = await orm.bookshelf.knex.raw(rawSql);
+  return result.rows[0];
 }
-function getRecentImportsByType(transacting, type, importIds) {
-  return transacting.select('*').from(`bookbrainz.${(0, _snakeCase2.default)(type)}_import`).whereIn('bbid', importIds);
-}
-async function getRecentImports(orm, transacting, limit = 10, offset = 0) {
-  /* Fetch most recent ImportIds classified by entity types
-  	=> importHolder - holds recentImports classified by entity type
-  	=> timeStampMap - holds value importedAt value in object with importId
-  		as key
-  	=> externalSourceIdMap - holds value originId value in object with importId as
-  		key
-  */
+
+/**
+ * Deletes the Oauth token with related data from the database
+ *
+ * @param {number} editorId - Editor's id.
+ * @param {string} service - name of the service.
+ * @param {object} orm - the BookBrainz ORM, initialized during app setup
+ *
+ */
+async function deleteOauthToken(editorId, service, orm) {
   const {
-    importHolder: recentImportIdsByType,
-    timeStampMap,
-    externalSourceIdMap
-  } = await getRecentImportUtilData(transacting, limit, offset);
-
-  /* Fetch imports for each entity type using their importIds
-  	We first pass type and id to fetch function, await all those promises
-  	and then flatten the array containing those results. Classification by
-  	type is important as only by knowing types we can access dataId and
-  	hence subsequent data.
-  */
-  const recentImports = (0, _flatten2.default)(await Promise.all(_entity.ENTITY_TYPES.map(type => getRecentImportsByType(transacting, type, recentImportIdsByType[type]))));
-
-  // Fetch all default alias ids
-  const defaultAliasIds = (0, _map2.default)(recentImports, 'default_alias_id');
-  // Fetch default aliases using the default alias ids
-  const defaultAliasesMap = await (0, _alias.getAliasByIds)(transacting, defaultAliasIds);
-
-  /* Add timestamp, source and defaultAlias to the recentImports
-  	Previously while getting utils data we fetched a mapping of importId to
-  	timestamp and externalSourceId.
-  	We also fetched map of aliasId to alias object.
-  	Now using those we populate our final object */
-  // First, get the external source mapping => {id: name}
-  const sourceMapping = await (0, _misc.getExternalSourceMapping)(transacting, true);
-  return recentImports.map(recentImport => {
-    // Add timestamp
-    recentImport.importedAt = (0, _moment.default)(timeStampMap[recentImport.bbid]).format('YYYY-MM-DD');
-
-    // Add name of external source
-    const externalSourceId = externalSourceIdMap[recentImport.bbid];
-    recentImport.source = sourceMapping[externalSourceId];
-
-    // Add default alias
-    const defaultAliasId = (0, _get2.default)(recentImport, 'default_alias_id');
-    recentImport.defaultAlias = defaultAliasesMap[defaultAliasId];
-    return (0, _util.snakeToCamel)(recentImport);
-  });
+    ExternalServiceOauth
+  } = orm;
+  await ExternalServiceOauth.where(
+  // eslint-disable-next-line camelcase
+  {
+    editor_id: editorId,
+    service
+  }).destroy();
 }
 
-// TODO: This will become expensive/pointless to compute, refactor the entire module.
-async function getTotalImports(transacting) {
-  const [{
-    count
-  }] = await transacting('bookbrainz.import_metadata').count('pending_entity_bbid').whereNull('accepted_entity_bbid');
-  return parseInt(count, 10);
+/**
+ * Saves the Oauth token with related data to the database
+ *
+ * @param {number} editorId - Editor's id.
+ * @param {string} service - name of the service.
+ * @param {string} accessToken - access token.
+ * @param {string} refreshToken - refresh token.
+ * @param {number} tokenExpiresTs - token expiration timestamp.
+ * @param {string[]} scopes - scopes.
+ * @param {object} orm - the BookBrainz ORM, initialized during app setup
+ * @returns {Promise} A Promise that resolves to the oauth token in JSON format
+ */
+async function saveOauthToken(editorId, service, accessToken, refreshToken, tokenExpiresTs, scopes, orm) {
+  const rawSql = `INSERT INTO bookbrainz.external_service_oauth
+			(editor_id, service, access_token, refresh_token, token_expires, scopes)
+		VALUES
+			(${editorId},
+			'${service}',
+			'${accessToken}',
+			'${refreshToken}',
+			to_timestamp(${tokenExpiresTs}),
+			'{${scopes}}')
+		ON CONFLICT (editor_id, service)
+		DO UPDATE SET
+			editor_id = EXCLUDED.editor_id,
+			service = EXCLUDED.service,
+			access_token = EXCLUDED.access_token,
+			refresh_token = EXCLUDED.refresh_token,
+			token_expires = EXCLUDED.token_expires,
+			scopes = EXCLUDED.scopes
+  RETURNING
+            editor_id,
+            service,
+            access_token,
+            refresh_token,
+            token_expires::text,
+            scopes;`;
+  const result = await orm.bookshelf.knex.raw(rawSql);
+  return result.rows[0];
+}
+
+/**
+ * Updates the Oauth token with related data in the database
+ *
+ * @param {number} editorId - Editor's id.
+ * @param {string} service - name of the service.
+ * @param {string} accessToken - access token.
+ * @param {string} refreshToken - refresh token.
+ * @param {number} tokenExpiresTs - token expiration timestamp.
+ * @param {object} orm - the BookBrainz ORM, initialized during app setup
+ * @returns {Promise} A Promise that resolves to the oauth token in JSON format
+ */
+async function updateOauthToken(editorId, service, accessToken, refreshToken, tokenExpiresTs, orm) {
+  const rawSql = `UPDATE bookbrainz.external_service_oauth
+			SET access_token = '${accessToken}',
+				refresh_token = '${refreshToken}',
+				token_expires = to_timestamp(${tokenExpiresTs})
+		  WHERE editor_id = '${editorId}'
+			AND service = '${service}'
+	  RETURNING
+                editor_id,
+                service,
+                access_token,
+                refresh_token,
+                token_expires::text,
+                scopes;`;
+  const result = await orm.bookshelf.knex.raw(rawSql);
+  return result.rows[0];
 }</code></pre>
         </article>
     </section>

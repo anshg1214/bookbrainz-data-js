@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>func/imports/recent-imports.js - Documentation</title>
+    <title>func/date.js - Documentation</title>
 
     <script src="scripts/prettify/prettify.js"></script>
     <script src="scripts/prettify/lang-css.js"></script>
@@ -29,7 +29,7 @@
 
 <div id="main">
     
-    <h1 class="page-title">func/imports/recent-imports.js</h1>
+    <h1 class="page-title">func/date.js</h1>
     
 
     
@@ -44,21 +44,15 @@
 Object.defineProperty(exports, "__esModule", {
   value: true
 });
-exports.getRecentImports = getRecentImports;
-exports.getTotalImports = getTotalImports;
-var _get2 = _interopRequireDefault(require("lodash/get"));
-var _map2 = _interopRequireDefault(require("lodash/map"));
-var _flatten2 = _interopRequireDefault(require("lodash/flatten"));
-var _snakeCase2 = _interopRequireDefault(require("lodash/snakeCase"));
-var _assign2 = _interopRequireDefault(require("lodash/assign"));
-var _entity = require("../../types/entity");
-var _alias = require("../alias");
-var _misc = require("./misc");
-var _moment = _interopRequireDefault(require("moment"));
-var _util = require("../../util");
+exports.ISODateStringToObject = ISODateStringToObject;
+exports.isNullDate = isNullDate;
+var _isNil2 = _interopRequireDefault(require("lodash/isNil"));
+var _has2 = _interopRequireDefault(require("lodash/has"));
+var _isPlainObject2 = _interopRequireDefault(require("lodash/isPlainObject"));
+var _isString2 = _interopRequireDefault(require("lodash/isString"));
 function _interopRequireDefault(obj) { return obj &amp;&amp; obj.__esModule ? obj : { default: obj }; }
 /*
- * Copyright (C) 2018 Shivam Tripathi
+ * Copyright (C) 2019  Nicolas Pelletier
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -75,101 +69,52 @@ function _interopRequireDefault(obj) { return obj &amp;&amp; obj.__esModule ? ob
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-/** getRecentImportIdsByType -
- * @param  {Transaction} transacting - Transaction object
- * @param  {number} limit - To limit the number of importIds fetched
- * @param  {number} offset - We offset the result by this value
- * @returns {Promise&lt;Object&lt;Array>>} - Returns an object containing arrays of
- * 		importIds of various importTypes
+/**
+ * Parse an ISO 8601-2004 string and return an object with separate day, month and year, if they exist.
+ * If any of the values don't exist, the default is an empty string.
+ * @function ISODateStringToObject
+ * @param {string} value - relationshipId number for initaial relationship
+ * @returns {object} a {day, month, year} object
  */
-async function getRecentImportUtilData(transacting, limit, offset) {
-  // Extract recent imports, types and import timeStamp
-  const recentImportUtilsData = await transacting.select('meta.imported_at', 'meta.external_source_id', 'bookbrainz.entity.bbid', 'bookbrainz.entity.type').from('bookbrainz.entity').where('is_import', true).join(transacting.select('pending_entity_bbid', 'imported_at', 'external_source_id').from('bookbrainz.import_metadata').orderBy('imported_at').whereNotNull('pending_entity_bbid').whereNull('accepted_entity_bbid').limit(limit).offset(offset).as('meta'), 'meta.pending_entity_bbid', 'bookbrainz.entity.bbid');
-
-  /* Construct importHolder object (holds importIds classified by their types)
-  	object of form {type: []} */
-  const importHolder = _entity.ENTITY_TYPES.reduce((holder, type) => (0, _assign2.default)(holder, {
-    [type]: []
-  }), {});
-
-  /* Returns the holder object which has two fields:
-  	=> importHolder: Object{type: Array[importIds]}
-  		Where type is entityType. This essentially classifies all the
-  		imports into the their respective types
-  	=> timestampMap: Object{importId: imported_at}
-  		This holds a mapping of all imports and their imported_at timestamps
-  	=> externalSourceIdMap: Object{importId: external_source_id}
-  		This holds a mapping of all imports and their external_source_ids
-  	*/
-  return recentImportUtilsData.reduce((holder, data) => {
-    holder.importHolder[data.type].push(data.bbid);
-    holder.externalSourceIdMap[data.bbid] = data.external_source_id;
-    holder.timeStampMap[data.bbid] = data.imported_at;
-    return holder;
-  }, {
-    externalSourceIdMap: {},
-    importHolder,
-    timeStampMap: {}
-  });
-}
-function getRecentImportsByType(transacting, type, importIds) {
-  return transacting.select('*').from(`bookbrainz.${(0, _snakeCase2.default)(type)}_import`).whereIn('bbid', importIds);
-}
-async function getRecentImports(orm, transacting, limit = 10, offset = 0) {
-  /* Fetch most recent ImportIds classified by entity types
-  	=> importHolder - holds recentImports classified by entity type
-  	=> timeStampMap - holds value importedAt value in object with importId
-  		as key
-  	=> externalSourceIdMap - holds value originId value in object with importId as
-  		key
-  */
-  const {
-    importHolder: recentImportIdsByType,
-    timeStampMap,
-    externalSourceIdMap
-  } = await getRecentImportUtilData(transacting, limit, offset);
-
-  /* Fetch imports for each entity type using their importIds
-  	We first pass type and id to fetch function, await all those promises
-  	and then flatten the array containing those results. Classification by
-  	type is important as only by knowing types we can access dataId and
-  	hence subsequent data.
-  */
-  const recentImports = (0, _flatten2.default)(await Promise.all(_entity.ENTITY_TYPES.map(type => getRecentImportsByType(transacting, type, recentImportIdsByType[type]))));
-
-  // Fetch all default alias ids
-  const defaultAliasIds = (0, _map2.default)(recentImports, 'default_alias_id');
-  // Fetch default aliases using the default alias ids
-  const defaultAliasesMap = await (0, _alias.getAliasByIds)(transacting, defaultAliasIds);
-
-  /* Add timestamp, source and defaultAlias to the recentImports
-  	Previously while getting utils data we fetched a mapping of importId to
-  	timestamp and externalSourceId.
-  	We also fetched map of aliasId to alias object.
-  	Now using those we populate our final object */
-  // First, get the external source mapping => {id: name}
-  const sourceMapping = await (0, _misc.getExternalSourceMapping)(transacting, true);
-  return recentImports.map(recentImport => {
-    // Add timestamp
-    recentImport.importedAt = (0, _moment.default)(timeStampMap[recentImport.bbid]).format('YYYY-MM-DD');
-
-    // Add name of external source
-    const externalSourceId = externalSourceIdMap[recentImport.bbid];
-    recentImport.source = sourceMapping[externalSourceId];
-
-    // Add default alias
-    const defaultAliasId = (0, _get2.default)(recentImport, 'default_alias_id');
-    recentImport.defaultAlias = defaultAliasesMap[defaultAliasId];
-    return (0, _util.snakeToCamel)(recentImport);
-  });
+function ISODateStringToObject(value) {
+  if (!(0, _isString2.default)(value)) {
+    if ((0, _isPlainObject2.default)(value) &amp;&amp; (0, _has2.default)(value, 'year')) {
+      return value;
+    }
+    return {
+      day: '',
+      month: '',
+      year: ''
+    };
+  }
+  const date = value ? value.split('-') : [];
+  // A leading minus sign denotes a BC date
+  // This creates an empty first array item that needs to be removed,
+  // and requires us to add the negative sign back for the year
+  if (date.length &amp;&amp; date[0] === '') {
+    date.shift();
+    date[0] = (-parseInt(date[0], 10)).toString();
+  }
+  return {
+    day: date.length > 2 ? date[2] : '',
+    month: date.length > 1 ? date[1] : '',
+    year: date.length > 0 ? date[0] : ''
+  };
 }
 
-// TODO: This will become expensive/pointless to compute, refactor the entire module.
-async function getTotalImports(transacting) {
-  const [{
-    count
-  }] = await transacting('bookbrainz.import_metadata').count('pending_entity_bbid').whereNull('accepted_entity_bbid');
-  return parseInt(count, 10);
+/**
+ * Determines wether a given date is empty or null, meaning no year month or day has been specified.
+ * Accepts a {day, month, year} object or an ISO 8601-2004 string (±YYYYYY-MM-DD)
+ * @function isNullDate
+ * @param {object|string} date - a {day, month, year} object or ISO 8601-2004 string (±YYYYYY-MM-DD)
+ * @returns {boolean} true if the date is empty/null
+ */
+function isNullDate(date) {
+  const dateObject = ISODateStringToObject(date);
+  const isNullYear = (0, _isNil2.default)(dateObject.year) || dateObject.year === '';
+  const isNullMonth = (0, _isNil2.default)(dateObject.month) || dateObject.month === '';
+  const isNullDay = (0, _isNil2.default)(dateObject.day) || dateObject.day === '';
+  return isNullYear &amp;&amp; isNullMonth &amp;&amp; isNullDay;
 }</code></pre>
         </article>
     </section>
